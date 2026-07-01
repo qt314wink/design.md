@@ -16,7 +16,7 @@
 /**
  * Package verification script for @google/design.md
  *
- * Runs 17 checks across 4 phases to ensure the package is correctly
+ * Runs 20 checks across 4 phases to ensure the package is correctly
  * structured for npm publication. Exit code 0 = all pass, 1 = failures.
  *
  * Usage: bun run scripts/check-package.ts
@@ -25,7 +25,7 @@
 import { readFileSync, existsSync, mkdtempSync, writeFileSync, rmSync } from 'fs';
 import { join, resolve } from 'path';
 import { execSync } from 'child_process';
-import { Glob, $ } from 'bun';
+import { Glob } from 'bun';
 import { tmpdir } from 'os';
 
 // ── Helpers ────────────────────────────────────────────────────────
@@ -66,7 +66,10 @@ function exec(cmd: string, opts?: { cwd?: string }): { ok: boolean; stdout: stri
       cwd: opts?.cwd ?? ROOT,
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: { ...process.env, PATH: `${process.env.HOME}/.bun/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${process.env.PATH ?? ''}` },
+      env: {
+        ...process.env,
+        PATH: `${process.env['HOME'] ?? ''}/.bun/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${process.env['PATH'] ?? ''}`,
+      },
     });
     return { ok: true, stdout, stderr: '' };
   } catch (e: unknown) {
@@ -82,40 +85,32 @@ function phase1_config() {
 
   const pkg = readPkg();
 
-  // 1. files field exists
-  const files = pkg.files as string[] | undefined;
+  const files = pkg['files'] as string[] | undefined;
   check('#1  `files` field exists', Array.isArray(files) && files.length > 0,
     'Add a "files" array to package.json to control what ships');
 
-  // 2. exports structure
-  const exports = pkg.exports as Record<string, Record<string, string>> | undefined;
+  const exports = pkg['exports'] as Record<string, Record<string, string>> | undefined;
   check('#2  `exports["."]` defined', !!exports?.['.'],
     'Missing exports["."] in package.json');
 
   if (exports?.['.']) {
-    check('#3  `exports["."].types` field exists', !!exports['.'].types,
+    check('#3  `exports["."].types` field exists', !!exports['.']?.['types'],
       'Missing types condition in exports["."]');
   } else {
     fail('#3  `exports["."].types` field exists', 'Skipped — no exports');
   }
 
-  // 4. main field
-  const main = pkg.main as string | undefined;
+  const main = pkg['main'] as string | undefined;
   check('#4  `main` field exists', !!main,
     'Missing "main" field in package.json');
 
-  // 5. types field
-  const types = pkg.types as string | undefined;
+  const types = pkg['types'] as string | undefined;
   check('#5  `types` field exists', !!types,
     'Missing "types" field in package.json');
 
-  // 5c. bin map exposes a Windows-friendly alias (no dot in the name).
-  // The `design.md` bin file is unrunnable on Windows because the `.md`
-  // suffix collides with the Markdown file association, so PowerShell
-  // opens the shim in the user's Markdown editor instead of executing it.
-  // A dot-free alias such as `designmd` lets the npm CMD/PowerShell shims
-  // resolve cleanly via PATHEXT. See https://github.com/google-labs-code/design.md/issues/54.
-  const bin = pkg.bin as Record<string, string> | string | undefined;
+  // bin must expose a Windows-friendly alias (no dot in the name).
+  // `design.md` collides with the .md file association on Windows/PowerShell.
+  const bin = pkg['bin'] as Record<string, string> | string | undefined;
   const binEntries = typeof bin === 'object' && bin !== null ? Object.keys(bin) : [];
   const hasDotFreeAlias = binEntries.some((name) => !name.includes('.'));
   check('#5c bin map exposes a Windows-friendly alias (no dot in the name)',
@@ -127,22 +122,23 @@ function phase1_paths() {
   heading('Phase 1b: Path resolution (post-build)');
 
   const pkg = readPkg();
-  const exports = pkg.exports as Record<string, Record<string, string>> | undefined;
+  const exports = pkg['exports'] as Record<string, Record<string, string>> | undefined;
+  const dotExport = exports?.['.'];
 
-  if (exports?.['.']) {
-    const importPath = join(ROOT, exports['.'].import);
-    const typesPath = join(ROOT, exports['.'].types);
+  if (dotExport) {
+    const importPath = join(ROOT, dotExport['import'] ?? '');
+    const typesPath = join(ROOT, dotExport['types'] ?? '');
     check('#2b `exports["."].import` resolves', existsSync(importPath),
-      `Missing: ${exports['.'].import}`);
+      `Missing: ${dotExport['import']}`);
     check('#3b `exports["."].types` resolves', existsSync(typesPath),
-      `Missing: ${exports['.'].types}`);
+      `Missing: ${dotExport['types']}`);
   }
 
-  const main = pkg.main as string | undefined;
+  const main = pkg['main'] as string | undefined;
   check('#4b `main` resolves', !!main && existsSync(join(ROOT, main)),
     `Missing: ${main}`);
 
-  const types = pkg.types as string | undefined;
+  const types = pkg['types'] as string | undefined;
   check('#5b `types` resolves', !!types && existsSync(join(ROOT, types)),
     `Missing: ${types}`);
 }
@@ -152,16 +148,14 @@ function phase1_paths() {
 function phase2() {
   heading('Phase 2: Clean build');
 
-  // 6. Clean dist
   const distPath = join(ROOT, 'dist');
   if (existsSync(distPath)) {
     rmSync(distPath, { recursive: true, force: true });
   }
   check('#6  Clean dist', !existsSync(distPath));
 
-  // 7. Build
   const build = exec('bun run build');
-  check('#7  Build succeeds', build.ok, 'tsc exited with non-zero');
+  check('#7  Build succeeds', build.ok, build.stderr || 'tsc exited with non-zero');
 
   if (!existsSync(distPath)) {
     fail('#8  No test files in dist', 'dist/ does not exist after build');
@@ -169,13 +163,11 @@ function phase2() {
     return;
   }
 
-  // 8. No test files in dist
   const testGlob = new Glob('**/*.test.*');
   const testFiles = Array.from(testGlob.scanSync({ cwd: distPath, absolute: false }));
   check('#8  No test files in dist', testFiles.length === 0,
     `Found: ${testFiles.join(', ')}`);
 
-  // 9. No fixture files in dist
   const fixtureGlob = new Glob('**/fixtures/**');
   const fixtureFiles = Array.from(fixtureGlob.scanSync({ cwd: distPath, absolute: false }));
   check('#9  No fixture files in dist', fixtureFiles.length === 0,
@@ -187,7 +179,6 @@ function phase2() {
 function phase3() {
   heading('Phase 3: Pack audit');
 
-  // 10. npm pack --dry-run
   const pack = exec('npm pack --dry-run --json 2>/dev/null');
   let fileList: string[] = [];
 
@@ -197,7 +188,6 @@ function phase3() {
       const files = (parsed[0]?.files ?? parsed.files ?? []) as Array<{ path: string }>;
       fileList = files.map((f) => f.path);
     } catch {
-      // Fallback: parse the non-JSON dry-run output
       const lines = pack.stdout.split('\n');
       fileList = lines
         .map((l) => l.replace(/^npm notice\s+\d+[\w.]+\s+/, '').trim())
@@ -209,37 +199,26 @@ function phase3() {
     'npm pack failed or returned empty file list');
 
   if (fileList.length === 0) {
-    fail('#11 No source .ts files in tarball', 'Skipped — no file list');
-    fail('#12 No test files in tarball', 'Skipped — no file list');
-    fail('#13 No config files in tarball', 'Skipped — no file list');
-    fail('#14 No fixtures in tarball', 'Skipped — no file list');
-    fail('#15 Entry point in tarball', 'Skipped — no file list');
+    for (const n of ['#11', '#12', '#13', '#14', '#15']) {
+      fail(`${n} (skipped)`, 'No file list from npm pack');
+    }
     return;
   }
 
-  // 11. No source .ts files (allow .d.ts and .d.ts.map)
   const rawTs = fileList.filter(
     (f) => f.endsWith('.ts') && !f.endsWith('.d.ts') && !f.endsWith('.d.ts.map')
   );
-  check('#11 No source .ts files in tarball', rawTs.length === 0,
-    `Found: ${rawTs.join(', ')}`);
+  check('#11 No source .ts files in tarball', rawTs.length === 0, `Found: ${rawTs.join(', ')}`);
 
-  // 12. No test files
   const testInPack = fileList.filter((f) => f.includes('.test.'));
-  check('#12 No test files in tarball', testInPack.length === 0,
-    `Found: ${testInPack.join(', ')}`);
+  check('#12 No test files in tarball', testInPack.length === 0, `Found: ${testInPack.join(', ')}`);
 
-  // 13. No config files
   const configInPack = fileList.filter((f) => f.includes('tsconfig'));
-  check('#13 No config files in tarball', configInPack.length === 0,
-    `Found: ${configInPack.join(', ')}`);
+  check('#13 No config files in tarball', configInPack.length === 0, `Found: ${configInPack.join(', ')}`);
 
-  // 14. No fixtures
   const fixturesInPack = fileList.filter((f) => f.includes('fixtures'));
-  check('#14 No fixtures in tarball', fixturesInPack.length === 0,
-    `Found: ${fixturesInPack.join(', ')}`);
+  check('#14 No fixtures in tarball', fixturesInPack.length === 0, `Found: ${fixturesInPack.join(', ')}`);
 
-  // 15. Entry point present
   const hasIndex = fileList.some((f) => f.includes('dist/index.js'));
   const hasTypes = fileList.some((f) => f.includes('dist/index.d.ts'));
   check('#15 Entry point present in tarball', hasIndex && hasTypes,
@@ -253,9 +232,9 @@ function phase4() {
 
   const distIndex = join(ROOT, 'dist', 'linter', 'index.js');
   const distTypes = join(ROOT, 'dist', 'linter', 'index.d.ts');
-
-  // 16. Import resolution (ESM)
   const tmpDir = mkdtempSync(join(tmpdir(), 'check-pkg-'));
+
+  // 16. ESM import
   const smokeFile = join(tmpDir, 'smoke.mjs');
   writeFileSync(
     smokeFile,
@@ -264,66 +243,63 @@ function phase4() {
     `console.log('ok');\n`
   );
   const importCheck = exec(`node ${smokeFile}`);
-  if (!importCheck.ok || !importCheck.stdout.trim().endsWith('ok')) {
-    console.error('Smoke test failed!');
+  if (!importCheck.ok) {
     console.error('STDOUT:', importCheck.stdout);
     console.error('STDERR:', importCheck.stderr);
   }
-  check('#16 Import resolution (ESM)', importCheck.ok && importCheck.stdout.trim().endsWith('ok'),
-    'Could not import lint() from dist/index.js');
+  check('#16 Import resolution (ESM)',
+    importCheck.ok && importCheck.stdout.trim().endsWith('ok'),
+    'Could not import lint() from dist/linter/index.js');
 
-  // 17. Type declarations exist and export lint
+  // 17. Type declarations
   const dtsContent = existsSync(distTypes) ? readFileSync(distTypes, 'utf-8') : '';
-  const hasLintExport = dtsContent.includes('export') && dtsContent.includes('lint');
-  const hasLintReportType = dtsContent.includes('LintReport');
   check('#17 Type declarations valid',
-    hasLintExport && hasLintReportType,
-    `index.d.ts missing lint export or LintReport type`);
+    dtsContent.includes('export') && dtsContent.includes('lint') && dtsContent.includes('LintReport'),
+    'dist/linter/index.d.ts missing lint export or LintReport type');
 
-  // 18. Runtime sanity
+  // 18. Runtime sanity — verifies LintReport shape including tailwindV4Config
+  //     tailwindV4Config was added in feat: add tailwindV4Config to LintReport
   const sanityFile = join(tmpDir, 'sanity.mjs');
   writeFileSync(
     sanityFile,
     `import { lint } from '${distIndex}';\n` +
     `const result = lint('---\\nname: Test\\ncolors:\\n  primary: "#ff0000"\\n---');\n` +
     `const keys = Object.keys(result);\n` +
-    `const expected = ['designSystem','findings','summary','tailwindConfig'];\n` +
-    `const hasAll = expected.every(k => keys.includes(k));\n` +
-    `if (!hasAll) {\n` +
-    `  console.error('Missing keys. Actual:', keys);\n` +
+    `const expected = ['designSystem','findings','summary','tailwindConfig','tailwindV4Config'];\n` +
+    `const missing = expected.filter(k => !keys.includes(k));\n` +
+    `if (missing.length > 0) {\n` +
+    `  console.error('Missing keys:', missing.join(', '), '\u2014 actual:', keys.join(', '));\n` +
     `  process.exit(1);\n` +
     `}\n` +
-    `if (typeof result.designSystem !== 'object') { process.exit(1); }\n` +
-    `if (!Array.isArray(result.findings)) { process.exit(1); }\n` +
-    `if (typeof result.summary.errors !== 'number') { process.exit(1); }\n` +
+    `if (typeof result.designSystem !== 'object') { console.error('designSystem not object'); process.exit(1); }\n` +
+    `if (!Array.isArray(result.findings)) { console.error('findings not array'); process.exit(1); }\n` +
+    `if (typeof result.summary.errors !== 'number') { console.error('summary.errors not number'); process.exit(1); }\n` +
+    `if (typeof result.tailwindV4Config.success !== 'boolean') { console.error('tailwindV4Config.success not boolean'); process.exit(1); }\n` +
     `console.log('ok');\n`
   );
   const sanityCheck = exec(`node ${sanityFile}`);
-  if (!sanityCheck.ok || !sanityCheck.stdout.trim().endsWith('ok')) {
-    console.error('Sanity check failed!');
+  if (!sanityCheck.ok) {
     console.error('STDOUT:', sanityCheck.stdout);
     console.error('STDERR:', sanityCheck.stderr);
   }
-  check('#18 Runtime sanity', sanityCheck.ok && sanityCheck.stdout.trim().endsWith('ok'),
-    'lint() did not return expected shape');
+  check('#18 Runtime sanity (LintReport shape + tailwindV4Config)',
+    sanityCheck.ok && sanityCheck.stdout.trim().endsWith('ok'),
+    'lint() did not return expected shape including tailwindV4Config');
 
-  // 19. CLI entry point works
+  // 19. CLI --help
   const cliIndex = join(ROOT, 'dist', 'index.js');
   const cliCheck = exec(`node ${cliIndex} --help`);
-  check('#19 CLI entry point valid', cliCheck.ok && !cliCheck.stderr.includes('ENOENT'),
+  check('#19 CLI entry point valid',
+    cliCheck.ok && !cliCheck.stderr.includes('ENOENT'),
     'CLI failed to run or reported missing files');
 
-  // 20. CLI spec command works
+  // 20. CLI spec command
   const specCheck = exec(`node ${cliIndex} spec`);
-  check('#20 CLI spec command valid', specCheck.ok && !specCheck.stderr.includes('Failed to load spec.md'),
+  check('#20 CLI spec command valid',
+    specCheck.ok && !specCheck.stderr.includes('Failed to load spec.md'),
     'CLI spec command failed to load spec.md');
 
-  // Cleanup
-  try {
-    rmSync(tmpDir, { recursive: true, force: true });
-  } catch {
-    // best effort
-  }
+  try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* best effort */ }
 }
 
 // ── Main ───────────────────────────────────────────────────────────
@@ -340,6 +316,4 @@ console.log(`\n${'═'.repeat(60)}`);
 console.log(`  ✅ ${passed} passed   ❌ ${failed} failed`);
 console.log(`${'═'.repeat(60)}\n`);
 
-if (failed > 0) {
-  process.exit(1);
-}
+if (failed > 0) process.exit(1);

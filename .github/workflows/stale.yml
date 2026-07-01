@@ -1,27 +1,42 @@
-# This workflow warns and then closes issues and PRs that have had no activity for a specified amount of time.
-#
-# You can adjust the behavior by modifying this file.
-# For more information, see:
-# https://github.com/actions/stale
+# Automatically marks and closes issues/PRs that have had no activity.
+# Stale threshold : 60 days of inactivity
+# Close threshold : 7 days after stale label is applied
+# Exempt labels   : release, skip-changelog (never auto-closed)
 name: Mark stale issues and pull requests
 
 on:
   schedule:
-  - cron: '38 21 * * *'
+    - cron: '38 21 * * *'  # Daily at 21:38 UTC
+
+permissions:
+  issues: write
+  pull-requests: write
 
 jobs:
   stale:
-
     runs-on: ubuntu-latest
-    permissions:
-      issues: write
-      pull-requests: write
-
     steps:
-    - uses: actions/stale@v9
-      with:
-        repo-token: ${{ secrets.GITHUB_TOKEN }}
-        stale-issue-message: 'Stale issue message'
-        stale-pr-message: 'Stale pull request message'
-        stale-issue-label: 'no-issue-activity'
-        stale-pr-label: 'no-pr-activity'
+      - uses: actions/stale@v9
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          days-before-stale: 60
+          days-before-close: 7
+          stale-issue-label: 'stale'
+          stale-pr-label: 'stale'
+          exempt-pr-labels: 'release,skip-changelog'
+          stale-issue-message: |
+            This issue has been automatically marked as stale because it has had no activity in the last 60 days.
+
+            If this is still relevant, please leave a comment or remove the `stale` label — it will be closed in 7 days if no further activity occurs.
+
+            Thank you for contributing to design.md! 💚
+          stale-pr-message: |
+            This pull request has been automatically marked as stale because it has had no activity in the last 60 days.
+
+            If this is still in progress, please leave a comment, push an update, or remove the `stale` label — it will be closed in 7 days if no further activity occurs.
+
+            If you need help getting it across the finish line, feel free to ask in a comment. We're happy to assist!
+          close-issue-message: |
+            This issue has been closed due to inactivity. If it is still valid, please open a new issue with updated context and a reference to this one. Thank you!
+          close-pr-message: |
+            This pull request has been closed due to inactivity. If you would like to continue this work, please reopen or open a new PR referencing this one. Thank you!
